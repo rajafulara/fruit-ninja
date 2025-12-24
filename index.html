@@ -1,0 +1,875 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Fruit Ninja: Hand Tracking Edition</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- MediaPipe Libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1640029074/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils@0.6.1629159505/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1620248257/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js" crossorigin="anonymous"></script>
+
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #111; font-family: 'Segoe UI', sans-serif; user-select: none; -webkit-user-select: none; touch-action: none; }
+        #game-container { position: relative; width: 100vw; height: 100vh; overflow: hidden; }
+        /* Mirror canvas for natural interaction */
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; transform: scaleX(-1); }
+        
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 10; display: flex; flex-direction: column; justify-content: space-between; padding: 20px; box-sizing: border-box; }
+        
+        .hud-top { display: flex; justify-content: space-between; align-items: flex-start; }
+        .score-box { text-align: left; }
+        .score-label { font-size: 1.2rem; color: #fbbf24; font-weight: bold; text-shadow: 2px 2px 0 #000; }
+        .score-val { font-size: 3rem; color: white; font-weight: 800; text-shadow: 3px 3px 0 #000; line-height: 1; }
+        
+        .lives-box { display: flex; gap: 5px; }
+        .heart { font-size: 2.5rem; filter: drop-shadow(2px 2px 2px black); transition: transform 0.2s; }
+        .heart.lost { filter: grayscale(100%) opacity(0.3); transform: scale(0.8); }
+
+        /* Positioned to avoid overlap */
+        .level-badge { position: absolute; top: 130px; left: 20px; background: rgba(0,0,0,0.6); padding: 5px 15px; border-radius: 20px; border: 2px solid #fbbf24; color: #fbbf24; font-weight: bold; font-size: 1.2rem; transform: skew(-10deg); }
+
+        #loading, #start-screen, #game-over-screen { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(0,0,0,0.85); z-index: 20; color: white; text-align: center; backdrop-filter: blur(5px); }
+        
+        .btn { background: linear-gradient(to bottom, #4ade80, #16a34a); border: 4px solid white; color: white; padding: 15px 40px; font-size: 1.5rem; font-weight: bold; border-radius: 50px; cursor: pointer; pointer-events: auto; transition: transform 0.1s; box-shadow: 0 5px 15px rgba(0,0,0,0.5); text-shadow: 1px 1px 2px rgba(0,0,0,0.5); }
+        .btn:hover { transform: scale(1.05); }
+        .btn:active { transform: scale(0.95); }
+        
+        .title { font-size: 4rem; font-weight: 900; color: #facc15; text-shadow: 4px 4px 0 #b45309; margin-bottom: 10px; }
+        .subtitle { font-size: 1.2rem; color: #d1d5db; margin-bottom: 20px; }
+        
+        .hidden { display: none !important; }
+        
+        /* Screen Shake Animation */
+        @keyframes shake {
+            0% { transform: translate(1px, 1px) rotate(0deg); }
+            10% { transform: translate(-1px, -2px) rotate(-1deg); }
+            20% { transform: translate(-3px, 0px) rotate(1deg); }
+            30% { transform: translate(3px, 2px) rotate(0deg); }
+            40% { transform: translate(1px, -1px) rotate(1deg); }
+            50% { transform: translate(-1px, 2px) rotate(-1deg); }
+            60% { transform: translate(-3px, 1px) rotate(0deg); }
+            70% { transform: translate(3px, 1px) rotate(-1deg); }
+            80% { transform: translate(-1px, -1px) rotate(1deg); }
+            90% { transform: translate(1px, 2px) rotate(0deg); }
+            100% { transform: translate(1px, -2px) rotate(-1deg); }
+        }
+        .shake-effect { animation: shake 0.5s; }
+        .flash-white { animation: flash 0.2s; }
+        @keyframes flash { 0% { background-color: white; opacity: 0.8; } 100% { opacity: 0; } }
+    </style>
+</head>
+<body>
+
+    <!-- Loading Screen -->
+    <div id="loading">
+        <div class="title">FRUIT SLICER</div>
+        <div class="subtitle">DREAMY PIANO EDITION</div>
+        <div class="animate-spin rounded-full h-12 w-12 border-4 border-yellow-400 border-t-transparent mb-4"></div>
+        <p id="status-text" class="text-xl font-mono">Initializing Camera...</p>
+        <p class="text-sm text-gray-400 mt-4">Please allow camera access to play.</p>
+    </div>
+
+    <!-- Start Screen -->
+    <div id="start-screen" class="hidden">
+        <div class="title">READY?</div>
+        <div class="subtitle">
+            Slice <span class="text-green-400">Fruits</span> 🍉<br>
+            Avoid <span class="text-red-500">Bombs</span> 💣<br>
+            Catch <span class="text-pink-500">Hearts</span> ❤️<br>
+        </div>
+        
+        <!-- Highlighted Instruction -->
+        <div class="bg-blue-600/40 border-2 border-blue-400 text-white px-6 py-4 rounded-xl mb-8 text-xl font-bold shadow-[0_0_15px_rgba(59,130,246,0.5)] animate-pulse max-w-md mx-4">
+            ☝️ Show your index finger in camera to cut fruits
+        </div>
+
+        <button id="start-btn" class="btn">START GAME</button>
+    </div>
+
+    <!-- Game Over Screen -->
+    <div id="game-over-screen" class="hidden">
+        <div class="title text-red-500">GAME OVER</div>
+        <div class="text-2xl mb-2">SCORE</div>
+        <div class="text-6xl font-black text-white mb-8" id="final-score">0</div>
+        <button id="restart-btn" class="btn">PLAY AGAIN</button>
+    </div>
+
+    <!-- Game Container -->
+    <div id="game-container">
+        <video id="input_video" class="hidden" playsinline autoplay muted></video>
+        <canvas id="output_canvas"></canvas>
+        <div id="flash-overlay" class="absolute inset-0 pointer-events-none opacity-0 bg-white"></div>
+
+        <!-- HUD -->
+        <div id="ui-layer">
+            <div class="hud-top">
+                <div class="score-box">
+                    <div class="score-label">SCORE</div>
+                    <div class="score-val" id="score">0</div>
+                </div>
+                <div class="lives-box" id="lives-container">
+                    <div class="heart">❤️</div>
+                    <div class="heart">❤️</div>
+                    <div class="heart">❤️</div>
+                </div>
+            </div>
+            <div class="level-badge" id="level-display">LEVEL 1</div>
+        </div>
+    </div>
+
+<script>
+    /**
+     * Hand Tracking Fruit Ninja - Dreamy Hall Piano Edition
+     */
+
+    // --- Global Config ---
+    const GRAVITY = 0.4;
+    const BLADE_LENGTH = 8; 
+    const BLADE_WIDTH = 8;
+    const CANVAS_SCALE = 1; 
+
+    // --- DOM Elements ---
+    const videoElement = document.getElementById('input_video');
+    const canvasElement = document.getElementById('output_canvas');
+    const ctx = canvasElement.getContext('2d', { alpha: false }); 
+    const scoreEl = document.getElementById('score');
+    const levelEl = document.getElementById('level-display');
+    const livesContainer = document.getElementById('lives-container');
+    const flashOverlay = document.getElementById('flash-overlay');
+    const container = document.getElementById('game-container');
+
+    // --- Game State ---
+    let gameState = 'loading'; // loading, menu, playing, gameover
+    let score = 0;
+    let lives = 3;
+    let level = 1;
+    let gameFrame = 0;
+    
+    // Entities
+    let fruits = [];
+    let particles = [];
+    let splatters = [];
+    let handTrail = [];
+    let floatingTexts = [];
+    
+    // Wave Management
+    let waveTimer = 0;
+    let nextSpawnTime = 0;
+
+    // Hand Data
+    let handPos = { x: 0, y: 0 };
+    let isHandDetected = false;
+    let lastHandPos = { x: 0, y: 0 };
+    let handVelocity = { x: 0, y: 0 };
+
+    // Assets
+    const fruitTypes = [
+        { id: 'watermelon', emoji: '🍉', color: '#ff5555', splash: '#ff0000' },
+        { id: 'orange', emoji: '🍊', color: '#ffa500', splash: '#ff8800' },
+        { id: 'lemon', emoji: '🍋', color: '#ffff00', splash: '#ffff00' },
+        { id: 'apple', emoji: '🍎', color: '#ff0000', splash: '#cc0000' },
+        { id: 'kiwi', emoji: '🥝', color: '#88ff88', splash: '#55aa55' },
+        { id: 'coconut', emoji: '🥥', color: '#eeeeee', splash: '#ffffff' },
+        { id: 'grape', emoji: '🍇', color: '#cc88ff', splash: '#aa00cc' }
+    ];
+
+    function createFruitCanvas(emoji, size) {
+        const c = document.createElement('canvas');
+        c.width = size;
+        c.height = size;
+        const cx = c.getContext('2d');
+        cx.font = `${size * 0.8}px Arial`;
+        cx.textAlign = 'center';
+        cx.textBaseline = 'middle';
+        cx.fillText(emoji, size/2, size/2 + size*0.05);
+        return c;
+    }
+
+    // Cache fruit images
+    const fruitImages = {};
+    fruitTypes.forEach(f => {
+        fruitImages[f.id] = createFruitCanvas(f.emoji, 96); 
+    });
+    const bombImage = createFruitCanvas('💣', 96);
+    const heartImage = createFruitCanvas('❤️', 96);
+
+    // --- Audio System: Dreamy Hall Piano ---
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    let reverbNode = null;
+    let masterGain = null;
+
+    // 1. Procedural Hall Reverb
+    function createReverb() {
+        if (reverbNode) return reverbNode;
+        const duration = 2.5; // Seconds tail
+        const decay = 2.0;
+        const rate = audioCtx.sampleRate;
+        const length = rate * duration;
+        const impulse = audioCtx.createBuffer(2, length, rate);
+        const left = impulse.getChannelData(0);
+        const right = impulse.getChannelData(1);
+
+        for (let i = 0; i < length; i++) {
+            // Exponential decay noise
+            const n = i / length;
+            const env = Math.pow(1 - n, decay);
+            left[i] = (Math.random() * 2 - 1) * env;
+            right[i] = (Math.random() * 2 - 1) * env;
+        }
+
+        const convolver = audioCtx.createConvolver();
+        convolver.buffer = impulse;
+        return convolver;
+    }
+
+    function initAudio() {
+        if (!masterGain) {
+            masterGain = audioCtx.createGain();
+            masterGain.gain.value = 0.5;
+            
+            reverbNode = createReverb();
+            
+            // Mix: Dry (Direct) + Wet (Reverb)
+            masterGain.connect(audioCtx.destination);
+            
+            // Reverb Chain
+            const reverbGain = audioCtx.createGain();
+            reverbGain.gain.value = 0.6; // Wet mix
+            masterGain.connect(reverbGain);
+            reverbGain.connect(reverbNode);
+            reverbNode.connect(audioCtx.destination);
+        }
+        if(audioCtx.state === 'suspended') audioCtx.resume();
+    }
+
+    // SFX
+    function playTone(freq, type, duration, vol=0.1) {
+        initAudio();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain);
+        gain.connect(masterGain);
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+        gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+        osc.start();
+        osc.stop(audioCtx.currentTime + duration);
+    }
+    
+    function sfxSlice() { playTone(800 + Math.random()*400, 'triangle', 0.1, 0.1); }
+    function sfxBomb() { playTone(80, 'sawtooth', 0.6, 0.3); } // Softer bomb
+    function sfxStart() { playTone(440, 'sine', 1.0, 0.2); }
+
+    // --- Music Engine: Soft Piano ---
+    let musicInterval = null;
+    let noteIndex = 0;
+
+    // Frequencies (C Major Scale mostly, gentle extensions)
+    const scale = [
+        261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, // C4-B4
+        523.25, 587.33, 659.25 // C5-E5
+    ];
+
+    // Progression: C -> Am -> F -> G (Arpeggiated)
+    const arpeggios = [
+        [0, 2, 4, 7], // C Major 7
+        [5, 0, 2, 4], // A Minor 7
+        [3, 5, 0, 2], // F Major 7
+        [4, 6, 1, 3]  // G Major
+    ];
+
+    function playSoftPianoNote(freq, time) {
+        // Complex Oscillator for Piano-ish sound (Sine + tiny Triangle)
+        const osc = audioCtx.createOscillator();
+        const osc2 = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+
+        osc.type = 'sine';
+        osc2.type = 'triangle';
+        
+        osc.frequency.setValueAtTime(freq, time);
+        osc2.frequency.setValueAtTime(freq, time);
+        
+        // Detune slightly for warmth
+        osc2.detune.value = 5; 
+
+        // Envelope: Soft Attack, Long Decay
+        gain.gain.setValueAtTime(0, time);
+        gain.gain.linearRampToValueAtTime(0.15, time + 0.1); // Soft attack
+        gain.gain.exponentialRampToValueAtTime(0.001, time + 2.5); // Long release (Hall feel)
+
+        osc.connect(gain);
+        osc2.connect(gain); // Mix triangle low
+        
+        // Connect to master (which goes to Reverb)
+        gain.connect(masterGain);
+
+        osc.start(time);
+        osc2.start(time);
+        osc.stop(time + 3.0);
+        osc2.stop(time + 3.0);
+    }
+
+    function startMusic() {
+        stopMusic();
+        initAudio();
+
+        let beat = 0;
+        const speed = 300; // ms per note (Slow, flowing)
+
+        musicInterval = setInterval(() => {
+            if (gameState !== 'playing') return;
+
+            const now = audioCtx.currentTime;
+            const bar = Math.floor(beat / 16) % 4; // Change chord every 16 notes (long phrases)
+            const notePos = beat % 4; // simple 4 note arpeggio repeating
+            
+            // Get note from current chord
+            const chord = arpeggios[bar];
+            // Walk up and down: 0, 1, 2, 3, 2, 1... pattern or just random flow
+            // Let's do a gentle rising flow
+            let scaleIndex = chord[notePos];
+            
+            // Random octave variation for "twinkle"
+            let freq = scale[scaleIndex % scale.length];
+            if (Math.random() > 0.7) freq *= 2; // Octave up occasionally
+            if (Math.random() > 0.9) freq /= 2; // Octave down rarely
+
+            // Humanize timing slightly
+            const timingOffset = Math.random() * 0.05;
+            playSoftPianoNote(freq, now + timingOffset);
+
+            beat++;
+        }, speed);
+    }
+
+    function stopMusic() {
+        if (musicInterval) {
+            clearInterval(musicInterval);
+            musicInterval = null;
+        }
+    }
+
+    // --- Classes ---
+
+    class Entity {
+        constructor(x, y) {
+            this.x = x;
+            this.y = y;
+            this.vx = 0;
+            this.vy = 0;
+            this.active = true;
+        }
+        update() {
+            this.x += this.vx;
+            this.y += this.vy;
+            this.vy += GRAVITY;
+        }
+    }
+
+    class Fruit extends Entity {
+        constructor(isBomb = false, isHeart = false) {
+            super(0, 0);
+            
+            const margin = canvasElement.width * 0.1;
+            this.x = margin + Math.random() * (canvasElement.width - margin * 2);
+            this.y = canvasElement.height + 60;
+            
+            const targetX = canvasElement.width/2 + (Math.random()*400 - 200);
+            const apexHeight = canvasElement.height * (0.15 + Math.random()*0.4); 
+            
+            const h = this.y - apexHeight;
+            const vy = -Math.sqrt(2 * GRAVITY * h);
+            const timeToApex = Math.abs(vy / GRAVITY);
+            const vx = (targetX - this.x) / timeToApex;
+
+            this.vx = vx;
+            this.vy = vy;
+            
+            this.rotation = Math.random() * Math.PI * 2;
+            this.rotSpeed = (Math.random() - 0.5) * 0.15;
+            this.radius = 45; 
+            
+            this.isBomb = isBomb;
+            this.isHeart = isHeart;
+            
+            if (this.isBomb) {
+                this.texture = bombImage;
+                this.color = '#333';
+            } else if (this.isHeart) {
+                this.texture = heartImage;
+                this.color = '#ff0055';
+            } else {
+                this.typeData = fruitTypes[Math.floor(Math.random() * fruitTypes.length)];
+                this.texture = fruitImages[this.typeData.id];
+                this.color = this.typeData.splash;
+            }
+        }
+
+        draw(ctx) {
+            ctx.save();
+            ctx.translate(this.x, this.y);
+            ctx.rotate(this.rotation);
+            ctx.drawImage(this.texture, -48, -48, 96, 96);
+            ctx.restore();
+        }
+
+        slice(angle) {
+            this.active = false;
+            
+            if (this.isBomb) {
+                sfxBomb();
+                triggerExplosion(this.x, this.y);
+                loseLife(true); 
+                return;
+            }
+
+            sfxSlice();
+
+            if (this.isHeart) {
+                gainLife();
+                spawnFloatingText(this.x, this.y, "+1 LIFE", "#ff0088");
+                spawnParticles(this.x, this.y, '#ff0088', 15);
+                return;
+            }
+
+            score += 10;
+            scoreEl.innerText = score;
+            checkLevelUp();
+            
+            if (splatters.length < 10) {
+                splatters.push(new Splatter(this.x, this.y, this.color));
+            }
+            
+            spawnParticles(this.x, this.y, this.color, 10);
+            
+            const sepForce = 4;
+            const sepX = Math.cos(angle) * sepForce;
+            const sepY = Math.sin(angle) * sepForce;
+
+            createFruitHalf(this, angle, this.vx + sepX, this.vy + sepY, 1);
+            createFruitHalf(this, angle, this.vx - sepX, this.vy - sepY, -1);
+        }
+    }
+
+    class FruitHalf extends Entity {
+        constructor(parentFruit, cutAngle, vx, vy, side) {
+            super(parentFruit.x, parentFruit.y);
+            this.vx = vx;
+            this.vy = vy;
+            this.rotation = parentFruit.rotation;
+            this.rotSpeed = parentFruit.rotSpeed + (side * 0.1);
+            this.texture = parentFruit.texture;
+            this.side = side; 
+            this.life = 60; 
+        }
+
+        update() {
+            super.update();
+            this.rotation += this.rotSpeed;
+            this.life--;
+            if (this.y > canvasElement.height + 100) this.active = false;
+        }
+
+        draw(ctx) {
+            ctx.save();
+            ctx.translate(this.x, this.y);
+            ctx.rotate(this.rotation);
+            
+            ctx.beginPath();
+            if (this.side === 1) ctx.rect(-48, -48, 96, 48);
+            else ctx.rect(-48, 0, 96, 48);
+            ctx.clip();
+            
+            ctx.drawImage(this.texture, -48, -48, 96, 96);
+            ctx.restore();
+        }
+    }
+
+    function createFruitHalf(fruit, angle, vx, vy, side) {
+        const half = new FruitHalf(fruit, angle, vx, vy, side);
+        half.rotation = angle + (side === 1 ? 0 : Math.PI); 
+        particles.push(half); 
+    }
+
+    class Splatter {
+        constructor(x, y, color) {
+            this.x = x;
+            this.y = y;
+            this.color = color;
+            this.life = 1.0;
+            this.scale = 0;
+            this.maxScale = 0.8 + Math.random() * 0.5;
+            this.rotation = Math.random() * Math.PI * 2;
+        }
+        draw(ctx) {
+            if (this.scale < this.maxScale) this.scale += 0.1;
+            this.life -= 0.005;
+            if (this.life <= 0) return;
+
+            ctx.save();
+            ctx.translate(this.x, this.y);
+            ctx.rotate(this.rotation);
+            ctx.scale(this.scale, this.scale);
+            ctx.globalAlpha = this.life * 0.6; 
+            ctx.fillStyle = this.color;
+            
+            ctx.beginPath();
+            ctx.arc(0, 0, 40, 0, Math.PI*2);
+            ctx.fill();
+            
+            ctx.restore();
+            ctx.globalAlpha = 1;
+        }
+    }
+
+    class Particle extends Entity {
+        constructor(x, y, color) {
+            super(x, y);
+            const angle = Math.random() * Math.PI * 2;
+            const speed = Math.random() * 8 + 2;
+            this.vx = Math.cos(angle) * speed;
+            this.vy = Math.sin(angle) * speed;
+            this.color = color;
+            this.life = 1.0;
+            this.size = Math.random() * 4 + 2;
+        }
+        update() {
+            super.update();
+            this.life -= 0.04; 
+            if (this.life <= 0) this.active = false;
+        }
+        draw(ctx) {
+            ctx.globalAlpha = this.life;
+            ctx.fillStyle = this.color;
+            ctx.beginPath();
+            ctx.rect(this.x, this.y, this.size, this.size); 
+            ctx.fill();
+            ctx.globalAlpha = 1;
+        }
+    }
+
+    class FloatingText {
+        constructor(x, y, text, color) {
+            this.x = x;
+            this.y = y;
+            this.text = text;
+            this.color = color;
+            this.life = 1.0;
+            this.vy = -3;
+        }
+        update() {
+            this.y += this.vy;
+            this.life -= 0.03;
+        }
+        draw(ctx) {
+            if(this.life <= 0) return;
+            ctx.globalAlpha = this.life;
+            ctx.fillStyle = this.color;
+            ctx.font = "bold 24px Arial";
+            ctx.fillText(this.text, this.x, this.y);
+            ctx.globalAlpha = 1;
+        }
+    }
+
+    // --- Core Functions ---
+
+    function resizeCanvas() {
+        canvasElement.width = window.innerWidth * CANVAS_SCALE;
+        canvasElement.height = window.innerHeight * CANVAS_SCALE;
+    }
+    window.addEventListener('resize', resizeCanvas);
+
+    function spawnParticles(x, y, color, count) {
+        const maxParticles = 50;
+        if (particles.length > maxParticles) return;
+        
+        for(let i=0; i<count; i++) particles.push(new Particle(x, y, color));
+    }
+
+    function spawnFloatingText(x, y, text, color) {
+        floatingTexts.push(new FloatingText(x, y, text, color));
+    }
+
+    function triggerExplosion(x, y) {
+        container.classList.add('shake-effect');
+        flashOverlay.style.opacity = '0.6';
+        flashOverlay.classList.add('flash-white');
+        
+        spawnParticles(x, y, '#ffffff', 20);
+        
+        setTimeout(() => {
+            container.classList.remove('shake-effect');
+            flashOverlay.classList.remove('flash-white');
+            flashOverlay.style.opacity = '0';
+        }, 500);
+    }
+
+    function checkLevelUp() {
+        // Level up every 100 points
+        const newLevel = Math.floor(score / 100) + 1; 
+        if (newLevel > level) {
+            level = newLevel;
+            levelEl.innerText = `LEVEL ${level}`;
+            levelEl.style.transform = "scale(1.5) rotate(-10deg)";
+            setTimeout(() => levelEl.style.transform = "scale(1) rotate(-10deg)", 300);
+            playTone(600, 'square', 0.2);
+            spawnFloatingText(canvasElement.width/2, canvasElement.height/2, "LEVEL UP!", "#ffd700");
+        }
+    }
+
+    function updateLivesUI() {
+        const hearts = livesContainer.children;
+        for (let i = 0; i < 3; i++) {
+            if (i < lives) {
+                hearts[i].classList.remove('lost');
+            } else {
+                hearts[i].classList.add('lost');
+            }
+        }
+    }
+
+    function loseLife(instant = false) {
+        if (instant) lives = 0; else lives--;
+        updateLivesUI();
+        if (lives <= 0) endGame();
+    }
+
+    function gainLife() {
+        if (lives < 3) lives++;
+        updateLivesUI();
+    }
+
+    function resetGame() {
+        score = 0;
+        lives = 3;
+        level = 1;
+        fruits = [];
+        particles = [];
+        splatters = [];
+        floatingTexts = [];
+        handTrail = [];
+        scoreEl.innerText = '0';
+        levelEl.innerText = 'LEVEL 1';
+        updateLivesUI();
+        
+        gameState = 'playing';
+        document.getElementById('game-over-screen').classList.add('hidden');
+        document.getElementById('start-screen').classList.add('hidden');
+        sfxStart();
+        startMusic();
+    }
+
+    function endGame() {
+        gameState = 'gameover';
+        stopMusic();
+        document.getElementById('final-score').innerText = score;
+        document.getElementById('game-over-screen').classList.remove('hidden');
+    }
+
+    // --- Wave Logic (Balanced) ---
+    function updateWaves() {
+        waveTimer++;
+        if (waveTimer >= nextSpawnTime) {
+            waveTimer = 0;
+            
+            // --- BALANCED DIFFICULTY CURVE ---
+            nextSpawnTime = Math.max(30, 90 - (level * 4)); 
+            
+            // Item Count
+            let count = 1 + Math.floor(level / 3) + Math.floor(Math.random() * 2);
+            if (count > 5) count = 5; 
+
+            for(let i=0; i<count; i++) {
+                setTimeout(() => {
+                    if (gameState !== 'playing') return;
+                    
+                    // Bomb Logic
+                    let bombChance = (level > 1) ? 0.05 * (level - 1) : 0;
+                    if (bombChance > 0.45) bombChance = 0.45;
+
+                    let isBomb = Math.random() < bombChance;
+                    let isHeart = Math.random() < 0.05;
+                    
+                    if (isBomb && isHeart) isBomb = false; 
+
+                    fruits.push(new Fruit(isBomb, isHeart));
+                }, i * 150); 
+            }
+        }
+    }
+
+    // --- Main Loop ---
+    function loop() {
+        gameFrame++;
+        ctx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+        // 1. Draw Video
+        if (videoElement.readyState >= 2) {
+            ctx.save();
+            const vidW = videoElement.videoWidth, vidH = videoElement.videoHeight;
+            const canW = canvasElement.width, canH = canvasElement.height;
+            const scale = Math.max(canW / vidW, canH / vidH);
+            const w = vidW * scale, h = vidH * scale;
+            ctx.drawImage(videoElement, (canW - w)/2, (canH - h)/2, w, h);
+            ctx.fillStyle = 'rgba(0,0,0,0.5)';
+            ctx.fillRect(0,0,canW,canH);
+            ctx.restore();
+        }
+
+        // 2. Splatters
+        if(splatters.length > 0) {
+            splatters.forEach((s, i) => {
+                s.draw(ctx);
+                if(s.life <= 0) splatters.splice(i, 1);
+            });
+        }
+
+        // 3. Game Logic
+        if (gameState === 'playing') {
+            updateWaves();
+
+            // Handle Fruits
+            for (let i = fruits.length - 1; i >= 0; i--) {
+                let f = fruits[i];
+                f.update();
+                f.draw(ctx);
+
+                // Collision Detection
+                if (f.active && isHandDetected && handTrail.length > 1) {
+                    const dx = handPos.x - f.x;
+                    const dy = handPos.y - f.y;
+                    
+                    if (Math.abs(dx) < 60 && Math.abs(dy) < 60) {
+                        const dist = Math.sqrt(dx*dx + dy*dy);
+                        if (dist < f.radius + 15) {
+                            const speed = (handVelocity.x**2 + handVelocity.y**2); 
+                            if (speed > 80) { 
+                                const angle = Math.atan2(handVelocity.y, handVelocity.x);
+                                f.slice(angle);
+                            }
+                        }
+                    }
+                }
+
+                if (!f.active && !(f instanceof FruitHalf)) {
+                     fruits.splice(i, 1);
+                } else if (f.y > canvasElement.height + 150) {
+                    if (f instanceof Fruit && !f.isBomb && !f.isHeart) {
+                        loseLife();
+                    }
+                    fruits.splice(i, 1);
+                }
+            }
+        }
+
+        // 4. Particles
+        for (let i = particles.length - 1; i >= 0; i--) {
+            let p = particles[i];
+            p.update();
+            p.draw(ctx);
+            if (!p.active) particles.splice(i, 1);
+        }
+
+        // 5. Floating Text
+        for (let i = floatingTexts.length - 1; i >= 0; i--) {
+            let t = floatingTexts[i];
+            t.update();
+            t.draw(ctx);
+            if (t.life <= 0) floatingTexts.splice(i, 1);
+        }
+
+        // 6. Draw Blade Trail - Optimized
+        if (handTrail.length > 1 && isHandDetected) {
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            
+            ctx.beginPath();
+            ctx.strokeStyle = 'rgba(0, 255, 255, 0.3)';
+            ctx.lineWidth = BLADE_WIDTH + 8;
+            ctx.moveTo(handTrail[0].x, handTrail[0].y);
+            for(let i=1; i<handTrail.length; i++) ctx.lineTo(handTrail[i].x, handTrail[i].y);
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = BLADE_WIDTH;
+            ctx.moveTo(handTrail[0].x, handTrail[0].y);
+            for(let i=1; i<handTrail.length; i++) ctx.lineTo(handTrail[i].x, handTrail[i].y);
+            ctx.stroke();
+        }
+
+        requestAnimationFrame(loop);
+    }
+
+    // --- MediaPipe Handling ---
+    let hasInitialized = false;
+
+    const hands = new Hands({locateFile: (file) => {
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/${file}`;
+    }});
+    
+    // Low complexity for performance
+    hands.setOptions({
+        maxNumHands: 1,
+        modelComplexity: 0, 
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+    });
+
+    hands.onResults((results) => {
+        if (!hasInitialized) {
+            hasInitialized = true;
+            document.getElementById('loading').classList.add('hidden');
+            document.getElementById('start-screen').classList.remove('hidden');
+            resizeCanvas();
+        }
+
+        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+            isHandDetected = true;
+            const tip = results.multiHandLandmarks[0][8]; 
+            
+            lastHandPos = { ...handPos };
+            handPos.x = tip.x * canvasElement.width;
+            handPos.y = tip.y * canvasElement.height;
+            
+            handVelocity.x = handPos.x - lastHandPos.x;
+            handVelocity.y = handPos.y - lastHandPos.y;
+
+            handTrail.push({x: handPos.x, y: handPos.y});
+            if (handTrail.length > BLADE_LENGTH) handTrail.shift();
+        } else {
+            isHandDetected = false;
+            if(handTrail.length > 0) handTrail.shift();
+        }
+    });
+
+    const camera = new Camera(videoElement, {
+        onFrame: async () => { await hands.send({image: videoElement}); },
+        width: 640, 
+        height: 360
+    });
+    
+    camera.start()
+        .then(() => document.getElementById('status-text').innerText = "Loading Lite Model...")
+        .catch(e => {
+             document.getElementById('status-text').innerHTML = `<span class="text-red-500">Camera Error: ${e.message}</span>`;
+        });
+
+    // --- Interaction ---
+    document.getElementById('start-btn').addEventListener('click', resetGame);
+    document.getElementById('restart-btn').addEventListener('click', resetGame);
+
+    resizeCanvas();
+    requestAnimationFrame(loop);
+
+</script>
+</body>
+</html>
+
+
